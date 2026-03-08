@@ -9,11 +9,11 @@ import { Toaster, toast } from 'sonner';
 import { io, Socket } from 'socket.io-client';
 import type { UserIdentity } from '../utils/identity';
 import { useAuth } from '../context/AuthContext';
-import { applyElementOrder, reconcileElements } from '../utils/sync';
 import { exportFromEditor } from '../utils/exportUtils';
 import * as api from '../api';
 import { useTheme } from '../context/ThemeContext';
 import {
+  buildRemoteSceneUpdate,
   UIOptions,
   getFilesDelta,
   hasRenderableElements,
@@ -407,14 +407,19 @@ export const Editor: React.FC = () => {
 
     const renderLoop = () => {
       if (cursorBuffer.current.size > 0 && excalidrawAPI.current) {
-        const collaborators = new Map(excalidrawAPI.current.getAppState().collaborators || []);
+        const collaborators = new Map<string, any>(
+          excalidrawAPI.current.getAppState().collaborators || []
+        );
 
         cursorBuffer.current.forEach((data, userId) => {
           collaborators.set(userId, data);
         });
 
         cursorBuffer.current.clear();
-        excalidrawAPI.current.updateScene({ collaborators });
+        const { sceneUpdate } = buildRemoteSceneUpdate({ collaborators });
+        if (sceneUpdate) {
+          excalidrawAPI.current.updateScene(sceneUpdate);
+        }
       }
       animationFrameId.current = requestAnimationFrame(renderLoop);
     };
@@ -426,13 +431,18 @@ export const Editor: React.FC = () => {
       setPeers(users.filter(u => u.id !== selfId));
 
       if (excalidrawAPI.current) {
-        const collaborators = new Map(excalidrawAPI.current.getAppState().collaborators || []);
+        const collaborators = new Map<string, any>(
+          excalidrawAPI.current.getAppState().collaborators || []
+        );
         users.forEach(user => {
           if (!user.isActive && user.id !== selfId) {
             collaborators.delete(user.id);
           }
         });
-        excalidrawAPI.current.updateScene({ collaborators });
+        const { sceneUpdate } = buildRemoteSceneUpdate({ collaborators });
+        if (sceneUpdate) {
+          excalidrawAPI.current.updateScene(sceneUpdate);
+        }
       }
     });
 
@@ -482,7 +492,6 @@ export const Editor: React.FC = () => {
 
       isSyncing.current = true;
       try {
-        // Snapshot pending payload and clear buffers so new incoming messages can schedule another flush.
         const pendingElements = Array.from(pendingRemoteElementsRef.current.values());
         pendingRemoteElementsRef.current.clear();
 
@@ -492,45 +501,37 @@ export const Editor: React.FC = () => {
         const elementOrder = hasPendingOrder ? (pendingOrderRaw as string[]) : null;
         pendingRemoteElementOrderRef.current = null;
 
-        const shouldUpdateFiles = Object.keys(incomingFiles).length > 0;
-        const nextFiles = shouldUpdateFiles
-          ? { ...lastSyncedFilesRef.current, ...incomingFiles }
-          : lastSyncedFilesRef.current;
+        const {
+          sceneUpdate,
+          mergedElements,
+          nextFiles,
+          shouldUpdateFiles,
+        } = buildRemoteSceneUpdate({
+          localElements: excalidrawAPI.current.getSceneElementsIncludingDeleted(),
+          pendingElements,
+          elementOrder,
+          lastSyncedFiles: lastSyncedFilesRef.current,
+          incomingFiles,
+        });
 
         if (shouldUpdateFiles && typeof excalidrawAPI.current.addFiles === "function") {
           excalidrawAPI.current.addFiles(Object.values(incomingFiles));
         }
 
-        const shouldUpdateElements =
-          pendingElements.length > 0 ||
-          !!elementOrder;
-
-        if (shouldUpdateElements) {
-          const localElements = excalidrawAPI.current.getSceneElementsIncludingDeleted();
-
-          // Don't drop remote updates just because the element is selected locally.
-          // The previous behavior could make a single element appear "stuck" (all other elements sync,
-          // but the selected one never applies remote updates).
-          let mergedElements = reconcileElements(localElements, pendingElements);
+        if (mergedElements) {
           if (elementOrder) {
-            mergedElements = applyElementOrder(mergedElements, elementOrder);
-            // Avoid immediately rebroadcasting the remote reorder back to the room.
             lastSyncedElementOrderSigRef.current = computeElementOrderSig(mergedElements);
           }
-
           pendingElements.forEach((el: any) => {
             recordElementVersion(el);
           });
 
-          // Apply at most once per animation frame.
-          excalidrawAPI.current.updateScene({
-            elements: mergedElements,
-            ...(shouldUpdateFiles ? { files: nextFiles } : null),
-          });
+          if (sceneUpdate) {
+            excalidrawAPI.current.updateScene(sceneUpdate);
+          }
           latestElementsRef.current = mergedElements;
-        } else if (shouldUpdateFiles) {
-          // File-only update: avoid pushing a full elements array.
-          excalidrawAPI.current.updateScene({ files: nextFiles });
+        } else if (sceneUpdate) {
+          excalidrawAPI.current.updateScene(sceneUpdate);
         }
 
         if (shouldUpdateFiles) {
@@ -541,7 +542,6 @@ export const Editor: React.FC = () => {
         isSyncing.current = false;
       }
 
-      // If more data arrived while we were flushing, schedule another frame.
       const moreElements = pendingRemoteElementsRef.current.size > 0;
       const moreFiles = Object.keys(pendingRemoteFilesRef.current || {}).length > 0;
       const moreOrder = hasNonEmptyArray(pendingRemoteElementOrderRef.current);
@@ -1000,7 +1000,7 @@ export const Editor: React.FC = () => {
     debounce((drawingId, elements, appState, files) => {
       enqueueSceneSave(drawingId, elements, appState, files);
     }, 1000),
-    [enqueueSceneSave] // Stable queue wrapper avoids concurrent version conflicts
+    [enqueueSceneSave]
   );
   debouncedSaveRef.current = debouncedSave;
   const debouncedSavePreview = useCallback(
@@ -1096,8 +1096,6 @@ export const Editor: React.FC = () => {
           userId: socketMeRef.current.id
         });
 
-        // Only schedule persistence when there's a real scene change (elements or files).
-        // This keeps autosave aligned with the throttled diff pass and avoids unthrottled O(n) scans.
         const appState = latestAppStateRef.current;
         if (appState) {
           debouncedSave(id, normalizedElements, appState, nextFiles);
@@ -1406,7 +1404,6 @@ export const Editor: React.FC = () => {
 
     broadcastChanges(allElements, currentFiles);
 
-    // `broadcastChanges` schedules persistence only when it actually detects diffs.
   }, [debouncedSave, debouncedSavePreview, broadcastChanges, id, resolveSafeSnapshot, canEdit]);
 
   useEffect(() => {
@@ -1457,7 +1454,7 @@ export const Editor: React.FC = () => {
 
 
   const handleBackClick = async () => {
-    if (isSavingOnLeave) return; // Prevent double clicks
+    if (isSavingOnLeave) return;
 
     setIsSavingOnLeave(true);
     let shouldNavigate = false;
