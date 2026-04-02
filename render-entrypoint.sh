@@ -11,7 +11,6 @@ set -e
 
 # -- Backend configuration --
 BACKEND_INTERNAL_PORT=8000
-export PORT="${BACKEND_INTERNAL_PORT}"
 export NODE_ENV=production
 export TRUST_PROXY="${TRUST_PROXY:-true}"
 
@@ -22,8 +21,10 @@ if [ -z "${DATABASE_URL:-}" ]; then
     exit 1
 fi
 
-# Render exposes a single port; nginx will listen on it.
-RENDER_PORT="${RENDER_PORT:-10000}"
+# Render injects PORT for the externally-facing service.
+# nginx listens on that port; the backend runs on an internal port.
+NGINX_PORT="${PORT:-10000}"
+export PORT="${BACKEND_INTERNAL_PORT}"
 
 # -- Secrets --
 JWT_SECRET_DIR="/app/.secrets"
@@ -79,11 +80,11 @@ done
 
 # -- Configure nginx --
 export BACKEND_URL="127.0.0.1:${BACKEND_INTERNAL_PORT}"
-echo "Configuring nginx with BACKEND_URL: ${BACKEND_URL}, listening on port ${RENDER_PORT}"
+echo "Configuring nginx with BACKEND_URL: ${BACKEND_URL}, listening on port ${NGINX_PORT}"
 
 ESCAPED_BACKEND_URL=$(printf '%s\n' "$BACKEND_URL" | sed 's/[\/&]/\\&/g')
 sed "s/__BACKEND_URL__/${ESCAPED_BACKEND_URL}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
-sed -i "s/listen 80;/listen ${RENDER_PORT};/" /etc/nginx/nginx.conf
+sed -i "s/listen 80;/listen ${NGINX_PORT};/" /etc/nginx/nginx.conf
 
 echo "Validating nginx configuration..."
 if ! nginx -t -c /etc/nginx/nginx.conf; then
@@ -93,7 +94,7 @@ fi
 
 # -- Start nginx in foreground --
 trap "kill ${BACKEND_PID} 2>/dev/null; exit 1" INT TERM
-echo "Starting nginx on port ${RENDER_PORT}..."
+echo "Starting nginx on port ${NGINX_PORT}..."
 nginx -g 'daemon off;' &
 NGINX_PID=$!
 
