@@ -1,0 +1,172 @@
+generator client {
+  provider      = "prisma-client-js"
+  output        = "../src/generated/client"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  String              @id @default(uuid())
+  username            String?             @unique
+  email               String              @unique
+  passwordHash        String
+  name                String
+  role                String              @default("USER")
+  mustResetPassword   Boolean             @default(false)
+  isActive            Boolean             @default(true)
+  authIdentities      AuthIdentity[]
+  drawings            Drawing[]
+  collections         Collection[]
+  drawingPermissions  DrawingPermission[]
+  passwordResetTokens PasswordResetToken[]
+  refreshTokens       RefreshToken[]
+  auditLogs           AuditLog[]
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+}
+
+model SystemConfig {
+  id                         String   @id @default("default")
+  authEnabled                Boolean  @default(false)
+  authOnboardingCompleted    Boolean  @default(false)
+  registrationEnabled        Boolean  @default(false)
+  oidcJitProvisioningEnabled Boolean?
+  authLoginRateLimitEnabled  Boolean  @default(true)
+  authLoginRateLimitWindowMs Int      @default(900000) // 15 minutes
+  authLoginRateLimitMax      Int      @default(20)
+  bootstrapSetupCodeHash     String?
+  bootstrapSetupCodeIssuedAt DateTime?
+  bootstrapSetupCodeExpiresAt DateTime?
+  bootstrapSetupCodeFailedAttempts Int @default(0)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+}
+
+model Collection {
+  id        String    @id @default(uuid())
+  name      String
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  drawings  Drawing[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+model Drawing {
+  id           String      @id @default(uuid())
+  name         String
+  elements     String // Stored as JSON string
+  appState     String // Stored as JSON string
+  files        String      @default("{}") // Stored as JSON string
+  preview      String? // SVG string for thumbnail
+  version      Int         @default(1)
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectionId String?
+  collection   Collection? @relation(fields: [collectionId], references: [id])
+  permissions  DrawingPermission[]
+  linkShares   DrawingLinkShare[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([userId, updatedAt])
+  @@index([userId, collectionId, updatedAt])
+}
+
+model DrawingPermission {
+  id           String   @id @default(uuid())
+  drawingId    String
+  drawing      Drawing  @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+  granteeUserId String
+  granteeUser  User     @relation(fields: [granteeUserId], references: [id], onDelete: Cascade)
+  permission   String // "view" | "edit"
+  createdByUserId String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([drawingId, granteeUserId], name: "drawingId_granteeUserId")
+  @@index([granteeUserId])
+  @@index([drawingId])
+}
+
+model DrawingLinkShare {
+  id            String   @id @default(uuid())
+  drawingId     String
+  drawing       Drawing  @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+  permission    String // "view" | "edit"
+  tokenHash     String   @unique
+  passphraseHash String?
+  expiresAt     DateTime?
+  revokedAt     DateTime?
+  failedAttempts Int     @default(0)
+  lockedUntil   DateTime?
+  lastUsedAt    DateTime?
+  lastUsedIp    String?
+  createdByUserId String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([drawingId])
+}
+
+model Library {
+  id        String   @id // User-specific library ID (e.g., "user_<userId>")
+  items     String   @default("[]") // Stored as JSON string array of library items
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String   // e.g., "login", "login_failed", "password_reset", "password_changed", "drawing_deleted"
+  resource  String?  // e.g., "drawing:123", "collection:456"
+  ipAddress String?
+  userAgent String?
+  details   String?  // JSON string for additional details
+  createdAt DateTime @default(now())
+}
+
+model AuthIdentity {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider    String
+  issuer      String
+  subject     String
+  emailAtLink String
+  lastLoginAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([issuer, subject])
+  @@unique([provider, userId])
+  @@index([userId])
+}
