@@ -84,7 +84,7 @@ echo "Configuring nginx with BACKEND_URL: ${BACKEND_URL}, listening on port ${NG
 
 ESCAPED_BACKEND_URL=$(printf '%s\n' "$BACKEND_URL" | sed 's/[\/&]/\\&/g')
 sed "s/__BACKEND_URL__/${ESCAPED_BACKEND_URL}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
-sed -i "s/listen 80;/listen ${NGINX_PORT};/" /etc/nginx/nginx.conf
+sed -i "s/listen 80;/listen 0.0.0.0:${NGINX_PORT};/" /etc/nginx/nginx.conf
 
 echo "Validating nginx configuration..."
 if ! nginx -t -c /etc/nginx/nginx.conf; then
@@ -99,7 +99,9 @@ nginx -g 'daemon off;' &
 NGINX_PID=$!
 
 # Wait for either process to exit, then stop the other
-wait -n ${BACKEND_PID} ${NGINX_PID} 2>/dev/null || true
+while kill -0 ${BACKEND_PID} 2>/dev/null && kill -0 ${NGINX_PID} 2>/dev/null; do
+    sleep 1
+done
 echo "A process exited unexpectedly. Shutting down..."
 kill ${BACKEND_PID} ${NGINX_PID} 2>/dev/null || true
 exit 1
