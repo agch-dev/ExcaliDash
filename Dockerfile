@@ -30,7 +30,6 @@ RUN apk add --no-cache python3 make g++
 
 COPY backend/package*.json ./
 COPY backend/tsconfig.json ./
-COPY backend/prisma.config.render.ts ./prisma.config.ts
 
 RUN npm ci && npm cache clean --force
 
@@ -58,10 +57,10 @@ RUN apk add --no-cache --virtual .build-deps python3 make g++ && \
     npm cache clean --force && \
     apk del .build-deps
 
-# Use PostgreSQL schema and render Prisma config
+# Use PostgreSQL schema and render migrations for Prisma 5
 COPY backend/prisma ./prisma/
 COPY backend/prisma/schema.render.prisma ./prisma/schema.prisma
-COPY backend/prisma.config.render.ts ./prisma.config.ts
+RUN rm -rf ./prisma/migrations && mv ./prisma/migrations-render ./prisma/migrations
 COPY --from=backend-builder /app/dist ./dist
 COPY --from=backend-builder /app/src/generated ./dist/generated
 RUN mkdir -p /app/uploads
